@@ -48,6 +48,7 @@ except ImportError:
     import urllib2 as request
     import urlparse
 
+import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('PeasGtk', '1.0')
 gi.require_version('WebKit2', '4.0')
@@ -58,7 +59,7 @@ from gi.repository import WebKit
 from adblockparserlite import AdblockRulesLite as AdblockRules
 #from adblockparser import AdblockRules
 
-FILTER_LIST_URL = "https://raw.githubusercontent.com/gorhill/uBlock/master/assets/ublock/filter-lists.json"
+FILTER_LIST_URL = "https://raw.githubusercontent.com/gorhill/uBlock/master/assets/assets.json"
 
 TIME_UNIT = {
         "second": 1,
@@ -271,8 +272,9 @@ class FilterManager(GObject.GObject):
     def active_filters(self):
         """Get a list of active filter for current config"""
         sec = MAIN_SECTION
-        filter_str = self.config.get(sec, "filters", "")
-        filter_str = filter_str.decode("UTF-8")
+        filter_str = self.config.get(sec, "filters")
+        if not filter_str:
+            return []
         if len(filter_str) == 0 or filter_str.isspace():
             return []
         filter_list = [x.strip() for x in filter_str.split(",")]
@@ -309,13 +311,13 @@ class FilterManager(GObject.GObject):
         full_path = os.path.join(self.cache_dir, filename)
         if os.path.exists(full_path) and not force_download:
             with io.open(full_path, encoding="UTF-8") as fd:
-                filter_list = json.load(fd)
+                filter_list = {k:v for k,v in json.load(fd).items() if not "off" in v and "title" in v and "contentURL" in v and "group" in v}
                 filename2filter = {}
                 for k, v in filter_list.items():
                     filename = force_alnum(v["title"]) + "-filter.txt"
                     v["filename"] = filename
-                    filename2filter[filename] = k
-                    self.filename2filter = filename2filter
+                    filename2filter[filename] = v["contentURL"][0]
+                self.filename2filter = filename2filter
                 self.filter_list = filter_list
             self.emit("filter-list-updated")
 
@@ -358,7 +360,7 @@ class FilterManager(GObject.GObject):
 
         for f, full_path in need_download:
             try:
-                url = self.filename2filter[f]
+                url = self.filter_list[f]["contentURL"][0]
                 download_file(url, full_path, self._load_filter, f, full_path)
             except  URLError as err:
                 print("Err: {} {}".format(url, err.reason))
@@ -688,7 +690,7 @@ class BlockLinkAddonPlugin (GObject.Object,
         GMARGIN = 6
         tree = Gtk.TreeView()
         self.tree = tree
-        model = Gtk.ListStore(str, str, str, bool)
+        model = Gtk.ListStore(str, str, str, bool, str)
         tree.set_model(model)
 
         renderer_text = Gtk.CellRendererText(xalign=0.0, yalign=0.0)
@@ -758,11 +760,9 @@ class BlockLinkAddonPlugin (GObject.Object,
         for g in sorted(list_by_group.keys()):
             items = list_by_group[g]
             for k, v in sorted(items, key = lambda x: x[1]["title"]):
-                url = k
-                title = v["title"]
+                url = v["contentURL"][0]
                 status = v["filename"] in active_filters
-                group = v["group"]
-                data = (title, url, group, status)
+                data = (v["title"], url, v["group"], status, k)
                 model.append(data)
         return False
 
@@ -773,9 +773,10 @@ class BlockLinkAddonPlugin (GObject.Object,
         status = not model.get_value(miter, 3)
         model.set_value(miter, 3, status)
         active_filters = self.filter_manager.active_filters
-        fname = self.filter_manager.filter_list[url]["filename"]
+        fname= model.get_value(miter, 4)
+        print("toggle filter %s" % fname)
         if status:
-            self.filter_manager.load_filter(url)
+            self.filter_manager.load_filter(fname, url)
             if fname not in active_filters:
                 active_filters.append(fname)
         else:
